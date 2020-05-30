@@ -74,45 +74,75 @@ class TypedefsResolver
 {
 public:
     TypedefsResolver(const LookupContext &context) : _context(context) {}
+
     void resolve(FullySpecifiedType *type, Scope **scope, ClassOrNamespace *binding)
     {
-        QSet<Symbol *> visited;
-        _binding = binding;
+        visited.clear();
+        _depth = 0;
+
         // Use a hard limit when trying to resolve typedefs. Typedefs in templates can refer to
         // each other, each time enhancing the template argument and thus making it impossible to
         // use an "alreadyResolved" container. FIXME: We might overcome this by resolving the
         // template parameters.
-        unsigned maxDepth = 15;
-        for (NamedType *namedTy = nullptr; maxDepth && (namedTy = getNamedType(*type)); --maxDepth) {
-            QList<LookupItem> namedTypeItems = getNamedTypeItems(namedTy->name(), *scope, _binding);
+        _maxDepth = 15;
 
-            if (Q_UNLIKELY(debug))
-                qDebug() << "-- we have" << namedTypeItems.size() << "candidates";
+        _typeItem.type = *type;
+        _typeItem.binding = binding;
 
-            if (!findTypedef(namedTypeItems, type, scope, visited))
-                break;
+        _rootScope = *scope;
+
+        if (resolve_helper()) {
+            *type = _typeItem.type;
         }
     }
 
 private:
-    NamedType *getNamedType(FullySpecifiedType& type) const
+    bool resolve_helper()
     {
-        NamedType *namedTy = type->asNamedType();
-        if (! namedTy) {
-            if (PointerType *pointerTy = type->asPointerType())
+        if (_depth == _maxDepth)
+            return false;
+        _depth++;
+
+        if (NamedType *namedTy = getNamedType()) {
+            QList<LookupItem> namedTypeItems = getNamedTypeItems(namedTy->name());
+
+            if (Q_UNLIKELY(debug))
+                qDebug() << "-- we have" << namedTypeItems.size() << "candidates";
+
+            TypeItem previousItem = _typeItem;
+            for (const LookupItem &it : namedTypeItems) {
+                if (checkTypedef(it)) {
+                    if (resolve_helper())
+                        return true;
+                } else {
+                    return true;
+                }
+            }
+            _typeItem = previousItem;
+        } else {
+            return true;
+        }
+        _depth--;
+        return false;
+    }
+
+    NamedType *getNamedType() const
+    {
+        NamedType *namedTy = _typeItem.type.type()->asNamedType();
+        if (!namedTy) {
+            if (PointerType *pointerTy = _typeItem.type.type()->asPointerType())
                 namedTy = pointerTy->elementType()->asNamedType();
         }
         return namedTy;
     }
 
-    QList<LookupItem> getNamedTypeItems(const Name *name, Scope *scope,
-                                        ClassOrNamespace *binding) const
+    QList<LookupItem> getNamedTypeItems(const Name *name) const
     {
-        QList<LookupItem> namedTypeItems = typedefsFromScopeUpToFunctionScope(name, scope);
+        QList<LookupItem> namedTypeItems = typedefsFromScopeUpToFunctionScope(name);
         if (namedTypeItems.isEmpty()) {
-            if (binding)
-                namedTypeItems = binding->lookup(name);
-            if (ClassOrNamespace *scopeCon = _context.lookupType(scope))
+            if (_typeItem.binding)
+                namedTypeItems = _typeItem.binding->lookup(name);
+            if (ClassOrNamespace *scopeCon = _context.lookupType(_rootScope))
                 namedTypeItems += scopeCon->lookup(name);
         }
 
@@ -120,13 +150,14 @@ private:
     }
 
     /// Return all typedefs with given name from given scope up to function scope.
-    static QList<LookupItem> typedefsFromScopeUpToFunctionScope(const Name *name, Scope *scope)
+    QList<LookupItem> typedefsFromScopeUpToFunctionScope(const Name *name) const
     {
         QList<LookupItem> results;
-        if (!scope)
+        if (!_rootScope)
             return results;
+
         Scope *enclosingBlockScope = nullptr;
-        for (Block *block = scope->asBlock(); block;
+        for (Block *block = _rootScope->asBlock(); block;
              block = enclosingBlockScope ? enclosingBlockScope->asBlock() : nullptr) {
             const unsigned memberCount = block->memberCount();
             for (unsigned i = 0; i < memberCount; ++i) {
@@ -146,7 +177,7 @@ private:
         return results;
     }
 
-    static bool isTypedefWithName(const Declaration *declaration, const Name *name)
+    bool isTypedefWithName(const Declaration *declaration, const Name *name) const
     {
         if (declaration->isTypedef()) {
             const Identifier *identifier = declaration->name()->identifier();
@@ -156,43 +187,42 @@ private:
         return false;
     }
 
-    bool findTypedef(const QList<LookupItem>& namedTypeItems, FullySpecifiedType *type,
-                     Scope **scope, QSet<Symbol *>& visited)
+    bool checkTypedef(const LookupItem &item)
     {
-        bool foundTypedef = false;
-        foreach (const LookupItem &it, namedTypeItems) {
-            Symbol *declaration = it.declaration();
-            if (declaration && declaration->isTypedef()) {
-                if (visited.contains(declaration))
-                    break;
-                visited.insert(declaration);
+        Symbol *declaration = item.declaration();
+        if (declaration && declaration->isTypedef() && !visited.contains(declaration)) {
+            visited.insert(declaration);
 
-                // continue working with the typedefed type and scope
-                if (type->type()->isPointerType()) {
-                    *type = FullySpecifiedType(
-                            _context.bindings()->control()->pointerType(declaration->type()));
-                } else if (type->type()->isReferenceType()) {
-                    *type = FullySpecifiedType(
-                            _context.bindings()->control()->referenceType(
-                                declaration->type(),
-                                declaration->type()->asReferenceType()->isRvalueReference()));
-                } else {
-                    *type = declaration->type();
-                }
-
-                *scope = it.scope();
-                _binding = it.binding();
-                foundTypedef = true;
-                break;
+            // continue working with the typedefed type and scope
+            if (_typeItem.type->isPointerType()) {
+                _typeItem.type = FullySpecifiedType(
+                    _context.bindings()->control()->pointerType(declaration->type()));
+            } else if (_typeItem.type->isReferenceType()) {
+                _typeItem.type = FullySpecifiedType(_context.bindings()->control()->referenceType(
+                    declaration->type(),
+                    declaration->type()->asReferenceType()->isRvalueReference()));
+            } else {
+                _typeItem.type = declaration->type();
             }
+            _typeItem.binding = item.binding();
+            return true;
         }
-
-        return foundTypedef;
+        return false;
     }
 
     const LookupContext &_context;
-    // binding has to be remembered in case of resolving typedefs for templates
-    ClassOrNamespace *_binding = nullptr;
+
+    struct TypeItem
+    {
+        FullySpecifiedType type;
+        ClassOrNamespace *binding;
+    };
+    TypeItem _typeItem;
+    Scope* _rootScope;
+
+    mutable QSet<Symbol *> visited;
+    unsigned _depth;
+    unsigned _maxDepth;
 };
 
 static int evaluateFunctionArgument(const FullySpecifiedType &actualTy,

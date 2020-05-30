@@ -729,7 +729,7 @@ void CppToolsPlugin::test_completion_data()
         ) << _("c.") << QStringList({"Data", "dataMember", "Final", "finalMember", "Other",
                                      "otherMember"});
 
-    QTest::newRow("template_as_base: typedef not available in derived") << _(
+    QTest::newRow("template_as_base: typedef available in derived") << _(
             "class Data { int dataMember; };\n"
             "template <class T> struct Base { typedef T F; };\n"
             "template <class T> struct Derived : Base<T> { F f; };\n"
@@ -738,7 +738,7 @@ void CppToolsPlugin::test_completion_data()
             "    Derived<Data> d;\n"
             "    @\n"
             "}\n"
-        ) << _("d.f.") << QStringList();
+        ) << _("d.f.") << QStringList({"Data", "dataMember"});
 
     QTest::newRow("template_as_base: explicit typedef from base") << _(
             "class Data { int dataMember; };\n"

@@ -116,6 +116,8 @@ private Q_SLOTS:
 
     void memberAccessAsTemplate();
 
+    void templateDerivedUsing();
+
     void variadicFunctionTemplate();
     void typeTemplateParameterWithDefault();
     void resolveOrder_for_templateFunction_vs_function();
@@ -1084,6 +1086,47 @@ void tst_FindUsages::memberAccessAsTemplate()
         QCOMPARE(find.usages()[1].line, 11);
         QCOMPARE(find.usages()[1].col, 11);
     }
+}
+
+void tst_FindUsages::templateDerivedUsing()
+{
+    const QByteArray src =
+        R"(
+struct MyStruct { int value; };
+template<class T> struct TypeInfo { using Type = T; };
+template<class FT> struct FancyTypeInfo : public TypeInfo<FT> {};
+template<class IT> struct Iterator { using ValueType = typename IT::Type; };
+int main()
+{
+    typedef MyStruct *MyStructPtr;
+    Iterator<FancyTypeInfo<MyStructPtr>>::ValueType s;
+    s->value;
+}
+)";
+
+    Document::Ptr doc = Document::create("templateInheritUsing");
+    doc->setUtf8Source(src);
+    doc->parse();
+    doc->check();
+
+    QVERIFY(doc->diagnosticMessages().isEmpty());
+    QVERIFY(doc->globalSymbolCount() >= 1);
+
+    Snapshot snapshot;
+    snapshot.insert(doc);
+
+    Class *s = doc->globalSymbolAt(0)->asClass();
+    QVERIFY(s);
+    QCOMPARE(s->name()->identifier()->chars(), "MyStruct");
+    QCOMPARE(s->memberCount(), 1);
+
+    Declaration *sv = s->memberAt(0)->asDeclaration();
+    QVERIFY(sv);
+    QCOMPARE(sv->name()->identifier()->chars(), "value");
+
+    FindUsages find(src, doc, snapshot);
+    find(sv);
+    QCOMPARE(find.usages().size(), 2);
 }
 
 void tst_FindUsages::variadicFunctionTemplate()
