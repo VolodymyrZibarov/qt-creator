@@ -84,6 +84,8 @@ private Q_SLOTS:
     void shadowedNames_2();
     void staticVariables();
 
+    void functionNameFoundInArguments();
+
     // Qt keywords
     void qproperty_1();
 
@@ -348,6 +350,46 @@ void tst_FindUsages::staticVariables()
     FindUsages findUsages(src, doc, snapshot);
     findUsages(d);
     QCOMPARE(findUsages.usages().size(), 5);
+}
+
+void tst_FindUsages::functionNameFoundInArguments()
+{
+    const QByteArray src =
+        R"(
+void bar();                 // call find usages for bar from here. This is 1st result
+void foo(int bar);          // should not be found
+void foo(int bar){}         // should not be found
+void foo2(int b=bar());     // 2nd result
+void foo2(int b=bar()){}    // 3rd result
+)";
+
+    Document::Ptr doc = Document::create("functionNameFoundInArguments");
+    doc->setUtf8Source(src);
+    doc->parse();
+    doc->check();
+
+    QVERIFY(doc->diagnosticMessages().isEmpty());
+    QVERIFY(doc->globalSymbolCount() >= 1);
+
+    Symbol *s = doc->globalSymbolAt(0);
+    QCOMPARE(s->name()->identifier()->chars(), "bar");
+
+    Snapshot snapshot;
+    snapshot.insert(doc);
+
+    FindUsages find(src, doc, snapshot);
+    find(s);
+
+    QCOMPARE(find.usages().size(), 3);
+
+    QCOMPARE(find.usages()[0].line, 1);
+    QCOMPARE(find.usages()[0].col, 5);
+
+    QCOMPARE(find.usages()[1].line, 4);
+    QCOMPARE(find.usages()[1].col, 16);
+
+    QCOMPARE(find.usages()[2].line, 5);
+    QCOMPARE(find.usages()[2].col, 16);
 }
 
 #if 0
