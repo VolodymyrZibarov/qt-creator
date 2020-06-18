@@ -889,6 +889,25 @@ bool ResolveExpression::visit(CallAST *ast)
                         }
                     }
                 }
+                // Constructors
+                QList<LookupItem> ctors = b->find(namedTy->name());
+                bool foundCtorFunction = false;
+                foreach (const LookupItem &r, ctors) {
+                    Symbol *overload = r.declaration();
+                    if (Function *funTy = overload->type()->asFunctionType()) {
+                        foundCtorFunction = true;
+                        if (maybeValidPrototype(funTy, actualArgumentCount)) {
+                            if (Function *proto = instantiate(namedTy->name(), funTy)
+                                                      ->asFunctionType())
+                                addResult(ty.simplified(), scope);
+                        }
+                    }
+                }
+                if (!foundCtorFunction) {
+                    // default constructor
+                    if (actualArgumentCount == 0)
+                        addResult(ty.simplified(), scope);
+                }
             }
 
         } else if (Function *funTy = ty->asFunctionType()) {
